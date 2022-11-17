@@ -1,0 +1,275 @@
+
+var perimetro = ee.FeatureCollection(table);
+var lotesce = ee.FeatureCollection(table2);
+
+var styling = {color: 'white', fillColor: '00000000'};
+
+Map.setControlVisibility({all: false});
+
+var nombrelotes = lotesce.aggregate_array('nom_lote').distinct();
+
+var listarnombres = lotesce.select('nom_lote')
+var ln_array = listarnombres.aggregate_array('nom_lote').sort()
+
+var display = function(ln_array) 
+{
+  var selected = ee.Feature(listarnombres.filter(ee.Filter.eq('nom_lote', ln_array)).first())
+  var geometria = selected.geometry()
+  Map.clear()
+  Map.addLayer(geometria, {color: 'white', fillColor: '0000000000'}, ln_array)
+  Map.centerObject(geometria, 16)
+  }
+  
+var fca = {};
+
+fca.createPanels = function() {
+  
+/* Introduccion */
+fca.intro = {
+    panel: ui.Panel([
+      ui.Label({
+        value: 'Campo Escuela FCA',
+        style: {fontWeight: 'bold', fontSize: '15px'}
+              })
+                ])
+                  };
+              
+fca.lotes = {
+    lista: ui.Select({
+    placeholder: 'Seleccionar lote',
+    style: {width: '40%'},
+    items: nombrelotes.getInfo(),
+    onChange: display
+  })
+};
+
+fca.indices = {
+    lista: ui.Select({
+    placeholder: 'Seleccionar Índice',
+    style: {width: '40%'},
+    items: ['NDVI','GNDVI','NDRE'],
+    onChange: fca.aver
+  })  
+};
+
+fca.lotes.panel = ui.Panel({
+    widgets: [
+       ui.Panel([
+        fca.lotes.lista,
+        fca.indices.lista
+      ], ui.Panel.Layout.flow('horizontal'))
+    ]
+    });
+    
+fca.opciones = {
+    dias: ui.DateSlider({
+      start: '2017-01-01', 
+      end: ee.Date(Date.now()),
+      value: ee.Date(Date.now()),
+      period: 14,
+      onChange: fca.aver,
+    style: {width: '85%'}}),
+    nubes: ui.Checkbox({
+      label:"Solo imágenes sin nubes", 
+      value: true, 
+      onChange:fca.aver })
+    
+};
+ 
+  fca.opciones.panel = ui.Panel({
+    widgets: [
+            fca.opciones.dias,
+            fca.opciones.nubes
+            ]
+});
+
+  
+fca.escena = {
+    select: ui.Select({
+      placeholder: 'Escenas disponibles:',
+      onChange: fca.vindex,
+      style: {width: '85%'}
+    }),
+    actualizar: ui.Button({
+      label: "Actualizar Vista",
+      onClick: fca.aver})
+      };
+ 
+
+fca.escena.panel = ui.Panel({
+    widgets: [
+      ui.Label('Escenas Disponibles', {}),
+      ui.Panel([
+        fca.escena.select,
+        fca.escena.actualizar,
+      ])
+    ]
+});
+
+}; 
+
+fca.aver  = function()
+
+  {
+
+var lote_seleccionado = fca.lotes.lista.getValue();
+  if (lote_seleccionado === null) { 
+    alert("No se ha seleccionado lote")}
+  else { lote_seleccionado = lotesce.select('nom_lote') }
+
+
+var nubosidad =  fca.opciones.nubes.getValue();
+    if (nubosidad === true) {
+      nubosidad = 10;
+      }
+    else {
+    nubosidad = 100;
+    }
+
+var period = fca.opciones.dias.getValue();
+var dataset = ee.ImageCollection(fca.COLLECTION_ID)
+          .filterMetadata ('CLOUDY_PIXEL_PERCENTAGE', 'Less_Than', nubosidad)
+          .filterDate(ee.Date(period[0]),period[1])
+          .filterBounds(lote_seleccionado)
+          .filterMetadata('MGRS_TILE', 'equals', '20JML')
+          .filterBounds(lote_seleccionado)
+          .select(['B2', 'B3', 'B4','B5','B8'])
+          
+var computedIds = dataset
+        .limit(fca.limiteimagenes)
+        .reduceColumns(ee.Reducer.toList(), ['system:index'])
+        .get('list');
+        
+    computedIds.evaluate(function(ids) {
+      // actualizar los ids para su posterior seleccion. 
+      fca.escena.select.items().reset(ids);
+      // se selecciona la primera imagen por default
+      fca.escena.select.setValue(fca.escena.select.items().get(0));
+    });
+};
+
+fca.vindex = function() {
+  var imageId = fca.escena.select.getValue();
+  var lote_= fca.lotes.lista.getValue();
+  var lote_seleccion = ee.Feature(listarnombres.filter(ee.Filter.eq('nom_lote', lote_)).first()).geometry()
+  var image = ee.Image(fca.COLLECTION_ID + '/' + imageId).resample()
+  var date = image.date().format('dd/MM/yyyy').getInfo();
+  
+  var index_option =  fca.indices.lista.getValue();
+    if (index_option === "NDVI") {
+    var indice = image.expression ('float ((NIR - RED) / (NIR + RED))',{
+    'NIR': image.select ('B8'),  
+    'RED': image.select ('B4')});
+    }
+    else {
+     if (index_option === "GNDVI") {
+    var indice = image.expression ('float ((NIR - GREEN) / (NIR + GREEN))',{
+    'NIR': image.select ('B8'),  
+    'GREEN': image.select ('B3')});
+    }
+     if (index_option === "NDRE") {
+    var indice = image.expression ('float ((NIR - NDRE) / (NIR + NDRE))',{
+    'NIR': image.select ('B8'),  
+    'NDRE': image.select ('B5')});
+    }
+    }
+ 
+var vistamejorada = indice.reduceRegion(ee.Reducer.percentile([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]), lote_seleccion)
+
+var finalss = indice.gte(ee.Number(vistamejorada.get(indice)))
+  
+var minMax = indice.reduceRegion({reducer: ee.Reducer.minMax(), geometry: lote_seleccion})
+var minMaxrename = minMax.rename(minMax.keys(), ['max','min']);
+  var Min = minMaxrename.getNumber('min').getInfo();
+  var Max = minMaxrename.getNumber('max').getInfo();
+  var paleta = {
+    min: Min,
+    max: Max,
+    palette: ['ff2f00','ff8424','ffb94f','ffdd7b','fdffa3','cbf17b','97e250','53cc32','00b024','009314']  
+    };
+  
+var clasificacion = (Max - Min)/ 10;
+  var clase1 = Min + clasificacion;
+  var clase2 = Min + (clasificacion*2);
+  var clase3 = Min + (clasificacion*3);
+  var clase4 = Min + (clasificacion*4);
+  var clase5 = Min + (clasificacion*5);
+  var clase6 = Min + (clasificacion*6);
+  var clase7 = Min + (clasificacion*7);
+  var clase8 = Min + (clasificacion*8);
+  var clase9 = Min + (clasificacion*9);
+  var clase10 = Min + (clasificacion*10);
+  
+var ndvi2 = ee.Image(indice)
+          .where(indice.gt(Min).and(indice.lte(clase1)), clase1)
+          .where(indice.gt(clase1).and(indice.lte(clase2)), clase2)
+          .where(indice.gt(clase2).and(indice.lte(clase3)), clase3)
+          .where(indice.gt(clase3).and(indice.lte(clase4)), clase4)
+          .where(indice.gt(clase4).and(indice.lte(clase5)), clase5)
+          .where(indice.gt(clase5).and(indice.lte(clase6)), clase6)
+          .where(indice.gt(clase6).and(indice.lte(clase7)), clase7)
+          .where(indice.gt(clase7).and(indice.lte(clase8)), clase8)
+          .where(indice.gt(clase8).and(indice.lte(clase9)), clase9)
+          .where(indice.gt(clase9).and(indice.lte(Max)), clase10);
+  
+  var escena = indice.clip(lote_seleccion);
+  var ndvi_cuantiles = ndvi2.clip(lote_seleccion);
+
+
+var etiqueta_max = ui.Label(Max)
+var etiqueta_min = ui.Label(Min)
+
+var opciones = {
+  hAxis: {
+    viewWindow: {min: Min, max: Max}
+  },
+  vAxis: {},
+  series: {
+    0: {color: 'green', border:'1px'}}
+};
+
+var histograma = ui.Chart.image.histogram(escena, lote_seleccion, 5)
+    .setSeriesNames(['Valor Indice'])
+    .setOptions(opciones);
+   
+histograma.style().set({
+    position: 'top-right',
+    width: '30%',
+    height: '40%',
+  });
+
+  Map.add(etiqueta_max)
+  Map.clear()
+  Map.addLayer(escena, paleta , date);
+  Map.addLayer(ndvi_cuantiles, {min: Min, max: Max, palette: ['ff2f00','ff8424','ffb94f','ffdd7b','fdffa3','cbf17b','97e250','53cc32','00b024','009314']} , "Cuantiles" + date);
+  Map.centerObject(lote_seleccion, 16);
+  Map.add(histograma)
+
+ }
+
+fca.createConstants = function() {
+  fca.COLLECTION_ID = 'COPERNICUS/S2_SR_HARMONIZED'
+  fca.limiteimagenes = 30;
+};
+
+fca.complete = function() {
+      fca.createPanels();
+      fca.createConstants();
+  var main = ui.Panel({
+    widgets: [
+      fca.intro.panel,
+      fca.lotes.panel,
+      fca.opciones.panel,
+      fca.escena.panel,
+      ],
+    style: {width: '25%', padding: '8px'},
+  });
+
+  Map.addLayer(lotesce.style(styling));
+  Map.addLayer(perimetro.style(styling));
+  Map.centerObject(perimetro, 13);
+  Map.setOptions('SATELLITE');
+  ui.root.insert(0, main);
+  }
+
+fca.complete();
